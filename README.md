@@ -81,21 +81,113 @@ Cuando un conjunto de usuarios consulta un enésimo número (superior a 1000000)
 12. Evalue el escenario de calidad asociado al requerimiento no funcional de escalabilidad y concluya si usando este modelo de escalabilidad logramos cumplirlo.
 13. Vuelva a dejar la VM en el tamaño inicial para evitar cobros adicionales.
 
-**Preguntas**
+**Preguntas y sus respuestas**
 
 1. ¿Cuántos y cuáles recursos crea Azure junto con la VM?
+
+Se crean 6 recursos (sin contar el grupo de recursos): la máquina virtual, el disco del sistema operativo, la interfaz de red (NIC), la dirección IP pública, el Network Security Group (NSG) y la red virtual con su subred.
+
 2. ¿Brevemente describa para qué sirve cada recurso?
+
+- **Máquina virtual:** el cómputo (CPU y RAM) donde corre Ubuntu y la aplicación.
+- **Disco del SO:** almacenamiento persistente donde vive el sistema operativo.
+- **NIC:** conecta la VM a la red virtual y le asigna IP privada.
+- **IP pública:** permite acceder a la VM desde Internet (SSH y el puerto 3000).
+- **NSG:** firewall que permite o bloquea tráfico entrante y saliente por puerto, protocolo y origen.
+- **Virtual network / subnet:** red privada donde se ubica la VM.
+
 3. ¿Al cerrar la conexión ssh con la VM, por qué se cae la aplicación que ejecutamos con el comando `npm FibonacciApp.js`? ¿Por qué debemos crear un *Inbound port rule* antes de acceder al servicio?
+
+Al ejecutar la app directamente en la terminal, queda como proceso hijo de la sesión SSH. Cuando esta se cierra, el sistema envía la señal de cierre al proceso y la app termina. Con `forever` la app corre desmonetizada de la sesión y se mantiene viva (y se reinicia si falla).
+
+La regla de entrada es necesaria porque el NSG, por defecto, solo permite lo explícitamente autorizado (en este caso SSH, puerto 22). Sin una regla para el puerto 3000, el tráfico hacia la app se descarta antes de llegar a la VM.
+
 4. Adjunte tabla de tiempos e interprete por qué la función tarda tando tiempo.
+
+| n | D2s_v4 (ms) | D4s_v4 (ms) |
+|---|---|---|
+| 1000000 | 7062 | 6943 |
+| 1010000 | 7704 | 7074 |
+| 1020000 | 8143 | 7170 |
+| 1030000 | 7700 | 7331 |
+| 1040000 | 7576 | 7491 |
+| 1050000 | 7697 | 7667 |
+| 1060000 | 7820 | 7765 |
+| 1070000 | 7974 | 7906 |
+| 1080000 | 8138 | 8039 |
+| 1090000 | 8289 | 8205 |
+
+La función suma enteros de precisión arbitraria en un ciclo. F(1.000.000) tiene unos 209.000 dígitos, y cada suma cuesta proporcional al tamaño del número, que crece en cada iteración; además cada término depende del anterior, así que el cálculo es secuencial. Por eso el tiempo crece más rápido que *n*: de 1.000.000 a 1.090.000 *n* sube 9% y el tiempo sube cerca de 17%. Con más vCPU el tiempo promedio solo bajó ~3%, porque cada petición se ejecuta en un solo hilo de Node.
+
+demostracion en video
+
 5. Adjunte imágen del consumo de CPU de la VM e interprete por qué la función consume esa cantidad de CPU.
+
+El pico fue de 99% en la D2s_v4 (2 vCPU) y de 80% en la D4s_v4 (4 vCPU). El cálculo es puro CPU, sin esperas de E/S. Aunque el porcentaje bajó, el consumo absoluto fue de ~2 núcleos en la D2s_v4 y ~3,2 en la D4s_v4. [COMPLETAR solo si lo verificas con top -H: el uso adicional corresponde a hilos auxiliares de Node, probablemente el recolector de basura.]
+
+demostracion en video
+
 6. Adjunte la imagen del resumen de la ejecución de Postman. Interprete:
     * Tiempos de ejecución de cada petición.
     * Si hubo fallos documentelos y explique.
+
+| | D2s_v4 | D4s_v4 |
+|---|---|---|
+| Peticiones exitosas | 20 de 20 | 20 de 20 |
+| Fallos | 0 | 0 |
+| Promedio | 13,6 s / 12,3 s | 14,2 s / 13,3 s |
+| Mín / máx | 7,2 s - 20,4 s / 7,1 s - 13,9 s | 7,5 s - 20,9 s / 7,8 s - 15,4 s |
+
+demostracin en video 
+
 7. ¿Cuál es la diferencia entre los tamaños `B2ms` y `B1ls` (no solo busque especificaciones de infraestructura)?
+
+Ambas son de la serie B (*burstable*), que a diferencia de otras series no entrega CPU constante sino un rendimiento base más un sistema de créditos: la VM acumula créditos mientras usa menos CPU que su base y los gasta cuando la supera; al agotarlos, se limita nuevamente a su rendimiento base.
+
+| | B1ls | B2ms |
+|---|---|---|
+| vCPU / RAM | 1 / 0,5 GiB | 2 / 8 GiB |
+| Rendimiento base | 5% | 60% (30% por vCPU) |
+| Créditos por hora | 3 | 36 |
+| Créditos máximos acumulables | 72 | 864 |
+
+La diferencia no es solo de infraestructura: la B1ls solo garantiza el 5% de un vCPU y sus créditos se agotan en pocos minutos bajo carga sostenida, quedando limitada a ese 5%. La B2ms garantiza una base mucho mayor y acumula muchos más créditos, por lo que tolera ráfagas más largas. Para una carga de CPU continua como el cálculo de Fibonacci, ninguna de las dos es ideal, porque al agotar los créditos ambas se estrangulan.
+
+**VMs usadas en esta práctica:** la serie B no estaba disponible en mi suscripción Azure for Students, por lo que usé `D2s_v4` y `D4s_v4`. Ambas pertenecen a la serie Dsv4 (uso general) y no son burstable: entregan CPU constante, sin créditos.
+
+| | D2s_v4 | D4s_v4 |
+|---|---|---|
+| vCPU | 2 | 4 |
+| RAM | 8 GiB | 16 GiB |
+| Discos de datos máx. | 4 | 8 |
+| IOPS máximas | 3200 | 6400 |
+| Costo aprox. | 78,84 USD/mes | 158,41 USD/mes |
+
+La D4s_v4 duplica los recursos y el costo de la D2s_v4. Como ninguna usa créditos, las diferencias observadas entre ambas en las pruebas se deben solo a la cantidad de vCPU y memoria, y no a un modelo de ráfagas.
+
 8. ¿Aumentar el tamaño de la VM es una buena solución en este escenario?, ¿Qué pasa con la FibonacciApp cuando cambiamos el tamaño de la VM?
+
+No es una buena solución en este escenario: la app usa un solo hilo, por lo que más núcleos no aceleran una petición, y la solución tiene un techo (el tamaño máximo) y sigue siendo un único punto de falla. Al cambiar el tamaño, la VM se reinicia y la app deja de estar disponible; como `forever` no sobrevive al reinicio, hay que volver a lanzarla manualmente.
+
+
 9. ¿Qué pasa con la infraestructura cuando cambia el tamaño de la VM? ¿Qué efectos negativos implica?
+
+La VM se detiene y se reasigna a hardware con el nuevo tamaño, y luego se reinicia. Efectos negativos: tiempo de inactividad, pérdida de lo que esté en el disco temporal, posible cambio de IP si no es estática, procesos que hay que relanzar y mayor costo por hora.
+
+
 10. ¿Hubo mejora en el consumo de CPU o en los tiempos de respuesta? Si/No ¿Por qué?
+
+Parcialmente. Los tiempos no mejoraron: el promedio en Newman fue igual o algo peor en la D4s_v4 y en consola solo bajó ~3%, porque la función no aprovecha varios núcleos. El pico de CPU bajó de 99% a 80%, pero eso se debe a que el porcentaje se mide sobre más vCPU; en núcleos absolutos la D4s_v4 usó más. Ninguna de las dos configuraciones cumple el límite del 70% del escenario de calidad.
+
 11. Aumente la cantidad de ejecuciones paralelas del comando de postman a `4`. ¿El comportamiento del sistema es porcentualmente mejor?
+
+El comportamiento no mejora porcentualmente: con un único hilo de Node las peticiones se atienden una a una, así que más ejecuciones simultáneas solo alargan la cola de espera y aumentan los fallos o tiempos. Tener más vCPU no cambia esto.
+
+
+
+VIDEO DEMOSTRACION PRIMERA PARTE
+
+https://youtu.be/91ALFq-b29U
 
 ### Parte 2 - Escalabilidad horizontal
 
